@@ -1,0 +1,20 @@
+{
+  "name": "twitch-sync-server",
+  "version": "1.0.0",
+  "description": "vtubers.me",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "nekoli",
+  "license": "ISC",
+  "dependencies": {
+    "@twurple/api": "^6.0.5",
+    "@twurple/auth": "^6.0.5",
+    "@twurple/eventsub-http": "^6.0.5",
+    "@twurple/eventsub-ngrok": "^6.0.5",
+    "dotenv": "^16.0.3",
+    "mariadb": "^3.1.0",
+    "node-cron": "^3.0.2"
+  }
+}
