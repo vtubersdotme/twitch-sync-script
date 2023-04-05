@@ -48,11 +48,10 @@ async function configureMariaDB() {
       password: process.env.MARIADB_PASSWORD,
       database: process.env.MARIADB_DATABASE,
       initializationTimeout: 1000,
-      connectionLimit: 10,
+      connectionLimit: 50,
     });
   } catch (err) {
-    console.error();
-    `Could not connect to MariaDB -> ${err}`;
+    console.error(`Could not connect to MariaDB: ${err}`);
     process.exit(1);
   }
   return pool;
@@ -123,7 +122,6 @@ async function configureEventSubHttpListener(apiClient) {
 
 async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
   console.info("Running twitch main function");
-  console.log(`Checking eventSubHttpListener: `, eventSubHttpListener);
   // retrieve user tokens from database where active is 1
   const conn = await pool.getConnection();
   const users = await conn.query(
@@ -151,7 +149,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
           scope: twitch_tokens.scope,
         });
       } catch (err) {
-        console.error(
+        console.info(
           `Error adding user to authProvider ${twitch_info?.displayName}:`,
           err
         );
@@ -184,6 +182,9 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                 ]
               );
               conn.release();
+              console.info(
+                `Successfully saved stats for ${twitch_info?.displayName} to DB.`
+              );
             } catch (err) {
               console.error(
                 `Error saving follow stats for ${twitch_info?.displayName} to DB:`,
@@ -196,6 +197,28 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
               `Error listening for live event for user ${twitch_info?.displayName}:`,
               err
             );
+            if (err.statusCode === 400) {
+              const conn = await pool.getConnection();
+              await conn.query(
+                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
+                [
+                  JSON.stringify({
+                    access_token: "0",
+                    refresh_token: "0",
+                    expires_in: "0",
+                  }),
+                  id,
+                ]
+              );
+              await conn.query(
+                `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
+                [0, id]
+              );
+              conn.release();
+              console.info(
+                `Invalid refresh token found, defaulting this user in the database`
+              );
+            }
           }
         }
       );
@@ -225,6 +248,10 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                   id,
                 ]
               );
+              conn.release();
+              console.info(
+                `Successfully saved stats for ${twitch_info?.displayName} to DB.`
+              );
             } catch (err) {
               console.error(
                 `Error saving follow stats for ${twitch_info?.displayName} to DB:`,
@@ -237,6 +264,28 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
               `Error listening for live event for user ${twitch_info?.displayName}:`,
               err
             );
+            if (err.statusCode === 400) {
+              const conn = await pool.getConnection();
+              await conn.query(
+                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
+                [
+                  JSON.stringify({
+                    access_token: "0",
+                    refresh_token: "0",
+                    expires_in: "0",
+                  }),
+                  id,
+                ]
+              );
+              await conn.query(
+                `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
+                [0, id]
+              );
+              conn.release();
+              console.log(
+                `Invalid refresh token found, defaulting this user in the database`
+              );
+            }
           }
         }
       );
@@ -246,35 +295,38 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         e
       );
 
-      // If for whatever reason, we are unable to update the subscription for a user and the statuscode is 401, this typically means we no longer have access to them and should update our database as such.
-      if (e.statusCode === 401) {
-        const conn = await pool.getConnection();
-        await conn.query(
-          `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
-          [
-            JSON.stringify({
-              access_token: "0",
-              refresh_token: "0",
-              expires_in: "0",
-            }),
-            id,
-          ]
-        );
-        await conn.query(
-          `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
-          [0, id]
-        );
-        conn.release();
-      }
+      // If for whatever reason, we are unable to update the subscription for a user and the statuscode is 400 (bad request), this typically means we no longer have access to them and should update our database as such.
+      // if (e.statusCode === 400) {
+      //   const conn = await pool.getConnection();
+      //   await conn.query(
+      //     `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
+      //     [
+      //       JSON.stringify({
+      //         access_token: "0",
+      //         refresh_token: "0",
+      //         expires_in: "0",
+      //       }),
+      //       id,
+      //     ]
+      //   );
+      //   await conn.query(
+      //     `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
+      //     [0, id]
+      //   );
+      //   conn.release();
+      //   console.log(
+      //     `Invalid refresh token for found, defaulting this user in the database`
+      //   );
+      // }
     }
   }
 
   // eventSubHttpListener.onSubscriptionCreateSuccess(async () => {
   //   console.info("Successfully created a subscription");
   // });
-  eventSubHttpListener.onSubscriptionDeleteFailure(async () => {
-    console.error("Failed to delete a subscription");
-  });
+  // eventSubHttpListener.onSubscriptionDeleteFailure(async () => {
+  //   console.error("Failed to delete a subscription");
+  // });
   // eventSubHttpListener.onSubscriptionDeleteSuccess(async () => {
   //   console.info("Successfully deleted a subscription");
   // });
