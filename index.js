@@ -63,20 +63,25 @@ async function configureAuthProvider(pool) {
     clientId,
     clientSecret,
     onRefresh: async (userId, newTokenData) => {
-      const conn = await pool.getConnection();
-      await conn.query(
-        `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ${userId}`,
-        [
-          {
-            accessToken: newTokenData.accessToken,
-            expiresIn: newTokenData.expiresIn,
-            obtainmentTimestamp: newTokenData.obtainmentTimestamp,
-            refreshToken: newTokenData.refreshToken,
-            scope: newTokenData.scope,
-          },
-        ]
-      );
-      conn.release();
+      try {
+        const conn = await pool.getConnection();
+        await conn.query(
+          `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ${userId}`,
+          [
+            {
+              accessToken: newTokenData.accessToken,
+              expiresIn: newTokenData.expiresIn,
+              obtainmentTimestamp: newTokenData.obtainmentTimestamp,
+              refreshToken: newTokenData.refreshToken,
+              scope: newTokenData.scope,
+            },
+          ]
+        );
+        await conn.release();
+      } catch (err) {
+        console.error(`Error refreshing token data for ${userId}`);
+      }
+      console.info(`Refreshed token data for ${userId}`);
     },
   });
   return authProvider;
@@ -122,7 +127,9 @@ async function configureEventSubHttpListener(apiClient) {
 
 async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
   console.info("Running twitch main function");
+
   // retrieve user tokens from database where active is 1
+  console.info("Querying all active twitch users from database");
   const conn = await pool.getConnection();
   const users = await conn.query(
     `SELECT * FROM ${process.env.MARIADB_TABLE} WHERE active = 1`
@@ -135,6 +142,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       let twitch_info = await JSON.parse(user.twitch_info);
       let twitch_stats = await JSON.parse(user.twitch_stats);
       let twitch_tokens = await JSON.parse(user.twitch_tokens);
+      console.info(twitch_info);
+      console.info(twitch_tokens);
 
       // This will add the user to our authProvider and then make sure their token is always refreshed (up to date).
       try {
@@ -214,7 +223,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                 `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
                 [0, id]
               );
-              conn.release();
+              await conn.release();
               console.info(
                 `Invalid refresh token found, defaulting this user in the database`
               );
@@ -248,7 +257,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                   id,
                 ]
               );
-              conn.release();
+              await conn.release();
               console.info(
                 `Successfully saved stats for ${twitch_info?.displayName} to DB.`
               );
@@ -281,7 +290,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                 `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
                 [0, id]
               );
-              conn.release();
+              await conn.release();
               console.log(
                 `Invalid refresh token found, defaulting this user in the database`
               );
@@ -294,43 +303,6 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         `Error updating subscriptions for user ${twitch_info?.displayName}:`,
         e
       );
-
-      // If for whatever reason, we are unable to update the subscription for a user and the statuscode is 400 (bad request), this typically means we no longer have access to them and should update our database as such.
-      // if (e.statusCode === 400) {
-      //   const conn = await pool.getConnection();
-      //   await conn.query(
-      //     `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
-      //     [
-      //       JSON.stringify({
-      //         access_token: "0",
-      //         refresh_token: "0",
-      //         expires_in: "0",
-      //       }),
-      //       id,
-      //     ]
-      //   );
-      //   await conn.query(
-      //     `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
-      //     [0, id]
-      //   );
-      //   conn.release();
-      //   console.log(
-      //     `Invalid refresh token for found, defaulting this user in the database`
-      //   );
-      // }
     }
   }
-
-  // eventSubHttpListener.onSubscriptionCreateSuccess(async () => {
-  //   console.info("Successfully created a subscription");
-  // });
-  // eventSubHttpListener.onSubscriptionDeleteFailure(async () => {
-  //   console.error("Failed to delete a subscription");
-  // });
-  // eventSubHttpListener.onSubscriptionDeleteSuccess(async () => {
-  //   console.info("Successfully deleted a subscription");
-  // });
-  // eventSubHttpListener.onRevoke(async () => {
-  //   console.info("Subscription was revoked");
-  // });
 }
