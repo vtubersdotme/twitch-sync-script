@@ -142,8 +142,6 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       let twitch_info = await JSON.parse(user.twitch_info);
       let twitch_stats = await JSON.parse(user.twitch_stats);
       let twitch_tokens = await JSON.parse(user.twitch_tokens);
-      console.info(twitch_info);
-      console.info(twitch_tokens);
 
       // This will add the user to our authProvider and then make sure their token is always refreshed (up to date).
       try {
