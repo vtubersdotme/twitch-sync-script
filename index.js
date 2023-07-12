@@ -61,7 +61,7 @@ async function configureMariaDB() {
       connectionLimit: 50,
     });
   } catch (err) {
-    logger.error(`Could not connect to MariaDB: ${err}`);
+    logger.error(err, `Could not connect to MariaDB`);
     process.exit(1);
   }
   return pool;
@@ -89,7 +89,7 @@ async function configureAuthProvider(pool) {
         await conn.query(query, values);
         await conn.release();
       } catch (err) {
-        logger.error(`Error refreshing token data for ${userId}`);
+        logger.error(err, `Error refreshing token data for ${userId}`);
       }
       logger.info(`Refreshed token data for ${userId}`);
     },
@@ -137,7 +137,7 @@ async function configureEventSubHttpListener(apiClient) {
 
 // Save twitch stats to database, also update active status
 async function updateTwitchStats(pool, twitch_stats, active, id) {
-  logger.info(`Saving twitch stats to database for ${twitch_stats?.id}`);
+  logger.info(`Saving twitch stats to database for ${id}`);
   let conn;
   try {
     conn = await pool.getConnection();
@@ -147,9 +147,7 @@ async function updateTwitchStats(pool, twitch_stats, active, id) {
     await conn.query(query, values);
     await conn.query(query2, [active, id]);
   } catch (err) {
-    logger.error(
-      `Error saving twitch stats to database for ${twitch_stats?.id}`
-    );
+    logger.error(err, `Error saving twitch stats to database for ${id}`);
   } finally {
     if (conn) {
       conn.release();
@@ -172,8 +170,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
     );
   } catch (err) {
     logger.error(
-      "Error querying active users, it is not reasonable to continue:",
-      err
+      err,
+      "Error querying active users, it is not reasonable to continue"
     );
     process.exit(1);
   } finally {
@@ -203,8 +201,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         });
       } catch (err) {
         logger.info(
-          `Error adding user to authProvider ${twitch_info?.displayName}:`,
-          err
+          err,
+          `Error adding user to authProvider ${twitch_info?.displayName}`
         );
       }
 
@@ -212,11 +210,10 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       await eventSubHttpListener.onStreamOnline(
         twitch_info.id,
         async (event) => {
-          logger.info(
-            "Streamer went live, lets do stuff:",
-            event.broadcasterDisplayName
-          );
           try {
+            logger.info(
+              `${event.broadcasterDisplayName} went live, lets do stuff`
+            );
             // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
             // Get stream info
@@ -241,8 +238,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             );
           } catch (err) {
             logger.error(
-              `Error listening for live event for user ${twitch_info?.displayName}:`,
-              err
+              err,
+              `Error listening for live event for user ${twitch_info?.displayName}`
             );
             if (err.statusCode === 400) {
               updateTwitchStats(
@@ -270,15 +267,13 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       await eventSubHttpListener.onStreamOffline(
         twitch_info.id,
         async (event) => {
-          logger.info(
-            "Streamer went offline, lets do stuff:",
-            event.broadcasterDisplayName
-          );
           try {
+            logger.info(
+              `${event.broadcasterDisplayName} went offline, lets do stuff`
+            );
             // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
-            // Get stream info
-            const stream = await event.getStream();
+            // getStream does not exist for onStreamOffline, probably not needed anyway
             // Get broadcaster stats
             const followTotal = await apiClient.channels
               .getChannelFollowersPaginated(broadcaster, broadcaster)
@@ -287,9 +282,9 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             updateTwitchStats(
               pool,
               JSON.stringify({
-                game_name: stream?.gameName,
-                title: stream?.title,
-                tags: stream?.tagIds,
+                game_name: "",
+                title: "",
+                tags: "",
                 followers: followTotal,
                 subscribers: 0,
                 is_live: 0,
@@ -299,8 +294,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             );
           } catch (err) {
             logger.error(
-              `Error listening for live event for user ${twitch_info?.displayName}:`,
-              err
+              err,
+              `Error listening for live event for user ${twitch_info?.displayName}`
             );
             if (err.statusCode === 400) {
               updateTwitchStats(
@@ -323,10 +318,10 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
           }
         }
       );
-    } catch (e) {
+    } catch (err) {
       logger.error(
-        `Error updating subscriptions for user ${twitch_info?.displayName}:`,
-        e
+        err,
+        `Error updating subscriptions for user ${twitch_info?.displayName}`
       );
     }
   }
