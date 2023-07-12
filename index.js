@@ -8,12 +8,19 @@ const {
 const { NgrokAdapter } = require("@twurple/eventsub-ngrok");
 const { createPool } = require("mariadb");
 const cron = require("node-cron");
+const pino = require("pino");
+const logger = pino(
+  pino.destination({
+    sync: false, // Asynchronous logging
+  })
+);
 
 const clientId = process.env.TWITCH_API_ID;
 const clientSecret = process.env.TWITCH_API_KEY;
 
 (async () => {
-  console.log("Started vTubers.Me Twitch Script :3");
+  logger.info("Started vTubers.Me Twitch Sync Script");
+
   const pool = await configureMariaDB();
   const authProvider = await configureAuthProvider(pool);
   const apiClient = await configureApiClient(authProvider);
@@ -21,25 +28,28 @@ const clientSecret = process.env.TWITCH_API_KEY;
   // This is necessary to prevent conflict errors resulting from ngrok assigning a new host name every time
   // const eventSubHttpListener = await configureDevEventSubHttpListener(apiClient);
   // try {
-  //   console.info("Deleting existing event sub subscriptions");
+  //   logger.info("Deleting existing event sub subscriptions");
   //   await apiClient.eventSub.deleteAllSubscriptions();
   // } catch (err) {
-  //   console.error(`Could not delete all event sub subscriptions`, err);
+  //   logger.error(`Could not delete all event sub subscriptions`, err);
   // }
+
   const eventSubHttpListener = await configureEventSubHttpListener(apiClient);
 
   twitchMain(apiClient, authProvider, eventSubHttpListener, pool);
 
   // schedule token update job to run every 30 minutes
   cron.schedule("*/30 * * * *", async () => {
-    console.log("Running twitch cron schedule ->");
+    logger.info("Running twitch cron schedule ->");
     twitchMain(apiClient, authProvider, eventSubHttpListener, pool);
   });
 })();
 
 async function configureMariaDB() {
   let pool;
-  console.info("Connecting to MariaDB");
+
+  logger.info("Connecting to MariaDB");
+
   try {
     pool = createPool({
       host: process.env.MARIADB_HOST,
@@ -51,44 +61,44 @@ async function configureMariaDB() {
       connectionLimit: 50,
     });
   } catch (err) {
-    console.error(`Could not connect to MariaDB: ${err}`);
+    logger.error(`Could not connect to MariaDB: ${err}`);
     process.exit(1);
   }
   return pool;
 }
 
 async function configureAuthProvider(pool) {
-  console.info("Configuring/updating auth provider");
+  logger.info("Configuring/updating auth provider");
   let authProvider = new RefreshingAuthProvider({
     clientId,
     clientSecret,
     onRefresh: async (userId, newTokenData) => {
       try {
         const conn = await pool.getConnection();
-        await conn.query(
-          `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ${userId}`,
-          [
-            {
-              accessToken: newTokenData.accessToken,
-              expiresIn: newTokenData.expiresIn,
-              obtainmentTimestamp: newTokenData.obtainmentTimestamp,
-              refreshToken: newTokenData.refreshToken,
-              scope: newTokenData.scope,
-            },
-          ]
-        );
+        const query = `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`;
+        const values = [
+          {
+            accessToken: newTokenData.accessToken,
+            expiresIn: newTokenData.expiresIn,
+            obtainmentTimestamp: newTokenData.obtainmentTimestamp,
+            refreshToken: newTokenData.refreshToken,
+            scope: newTokenData.scope,
+          },
+          userId,
+        ];
+        await conn.query(query, values);
         await conn.release();
       } catch (err) {
-        console.error(`Error refreshing token data for ${userId}`);
+        logger.error(`Error refreshing token data for ${userId}`);
       }
-      console.info(`Refreshed token data for ${userId}`);
+      logger.info(`Refreshed token data for ${userId}`);
     },
   });
   return authProvider;
 }
 
 async function configureApiClient(authProvider) {
-  console.info("Configuring api client");
+  logger.info("Configuring api client");
   let apiClient = new ApiClient({
     authProvider,
     logger: {
@@ -99,7 +109,7 @@ async function configureApiClient(authProvider) {
 }
 
 async function configureDevEventSubHttpListener(apiClient) {
-  console.info("Configuring event sub http listener");
+  logger.info("Configuring event sub http listener");
   let eventSubHttpListener = new EventSubHttpListener({
     apiClient,
     adapter: new NgrokAdapter(),
@@ -111,7 +121,7 @@ async function configureDevEventSubHttpListener(apiClient) {
 }
 
 async function configureEventSubHttpListener(apiClient) {
-  console.info("Configuring event sub http listener");
+  logger.info("Configuring event sub http listener");
   let eventSubHttpListener = new EventSubHttpListener({
     apiClient,
     adapter: new ReverseProxyAdapter({
@@ -125,16 +135,52 @@ async function configureEventSubHttpListener(apiClient) {
   return eventSubHttpListener;
 }
 
+// Save twitch stats to database, also update active status
+async function updateTwitchStats(pool, twitch_stats, active, id) {
+  logger.info(`Saving twitch stats to database for ${twitch_stats?.id}`);
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const query = `UPDATE ${process.env.MARIADB_TABLE} SET twitch_stats = ? WHERE id = ?`;
+    const query2 = `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`;
+    const values = [twitch_stats, id];
+    await conn.query(query, values);
+    await conn.query(query2, [active, id]);
+  } catch (err) {
+    logger.error(
+      `Error saving twitch stats to database for ${twitch_stats?.id}`
+    );
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+}
+
 async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
-  console.info("Running twitch main function");
+  let conn;
+  let users;
+  logger.info("Running twitch main function");
 
   // retrieve user tokens from database where active is 1
-  console.info("Querying all active twitch users from database");
-  const conn = await pool.getConnection();
-  const users = await conn.query(
-    `SELECT * FROM ${process.env.MARIADB_TABLE} WHERE active = 1`
-  );
-  conn.release();
+  logger.info("Querying all active twitch users from database");
+
+  try {
+    conn = await pool.getConnection();
+    users = await conn.query(
+      `SELECT * FROM ${process.env.MARIADB_TABLE} WHERE active = 1`
+    );
+  } catch (err) {
+    logger.error(
+      "Error querying active users, it is not reasonable to continue:",
+      err
+    );
+    process.exit(1);
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
 
   for (const user of users) {
     try {
@@ -143,9 +189,9 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       let twitch_stats = await JSON.parse(user.twitch_stats);
       let twitch_tokens = await JSON.parse(user.twitch_tokens);
 
-      // This will add the user to our authProvider and then make sure their token is always refreshed (up to date).
+      // This will add the user to the authProvider and then make sure their token is always refreshed (up to date).
       try {
-        console.log(
+        logger.info(
           `Adding ${twitch_info?.id} (${twitch_info?.displayName}) to authProvider`
         );
         await authProvider.addUser(`${twitch_info.id}`, {
@@ -156,7 +202,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
           scope: twitch_tokens.scope,
         });
       } catch (err) {
-        console.info(
+        logger.info(
           `Error adding user to authProvider ${twitch_info?.displayName}:`,
           err
         );
@@ -166,63 +212,53 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       await eventSubHttpListener.onStreamOnline(
         twitch_info.id,
         async (event) => {
+          logger.info(
+            "Streamer went live, lets do stuff:",
+            event.broadcasterDisplayName
+          );
           try {
-            // handle stream going online event
+            // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
-
-            // get broadcaster stats
+            // Get stream info
+            const stream = await event.getStream();
+            // Get broadcaster stats
             const followTotal = await apiClient.channels
               .getChannelFollowersPaginated(broadcaster, broadcaster)
               .getTotalCount();
-            // Connect to DB and save follow/live stats
-            try {
-              const conn = await pool.getConnection();
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_stats = ? WHERE id = ?`,
-                [
-                  JSON.stringify({
-                    followers: followTotal,
-                    subscribers: 0,
-                    is_live: 1,
-                  }),
-                  id,
-                ]
-              );
-              conn.release();
-              console.info(
-                `Successfully saved stats for ${twitch_info?.displayName} to DB.`
-              );
-            } catch (err) {
-              console.error(
-                `Error saving follow stats for ${twitch_info?.displayName} to DB:`,
-                err
-              );
-            }
-            console.info("Stream went live:", event.broadcasterDisplayName);
+            // Update stream stats
+            updateTwitchStats(
+              pool,
+              JSON.stringify({
+                game_name: stream?.gameName,
+                title: stream?.title,
+                tags: stream?.tagIds,
+                followers: followTotal,
+                subscribers: 0,
+                is_live: 1,
+              }),
+              1,
+              id
+            );
           } catch (err) {
-            console.error(
+            logger.error(
               `Error listening for live event for user ${twitch_info?.displayName}:`,
               err
             );
             if (err.statusCode === 400) {
-              const conn = await pool.getConnection();
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
-                [
-                  JSON.stringify({
-                    access_token: "0",
-                    refresh_token: "0",
-                    expires_in: "0",
-                  }),
-                  id,
-                ]
+              updateTwitchStats(
+                pool,
+                JSON.stringify({
+                  game_name: "",
+                  title: "",
+                  tags: "",
+                  followers: 0,
+                  subscribers: 0,
+                  is_live: 0,
+                }),
+                0,
+                id
               );
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
-                [0, id]
-              );
-              await conn.release();
-              console.info(
+              logger.info(
                 `Invalid refresh token found, defaulting this user in the database`
               );
             }
@@ -234,62 +270,53 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
       await eventSubHttpListener.onStreamOffline(
         twitch_info.id,
         async (event) => {
+          logger.info(
+            "Streamer went offline, lets do stuff:",
+            event.broadcasterDisplayName
+          );
           try {
-            // handle stream going offline event
+            // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
-            // get broadcaster stats
+            // Get stream info
+            const stream = await event.getStream();
+            // Get broadcaster stats
             const followTotal = await apiClient.channels
               .getChannelFollowersPaginated(broadcaster, broadcaster)
               .getTotalCount();
-            // Connect to DB and save follow stats
-            try {
-              const conn = await pool.getConnection();
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_stats = ? WHERE id = ?`,
-                [
-                  JSON.stringify({
-                    followers: followTotal,
-                    subscribers: 0,
-                    is_live: 0,
-                  }),
-                  id,
-                ]
-              );
-              await conn.release();
-              console.info(
-                `Successfully saved stats for ${twitch_info?.displayName} to DB.`
-              );
-            } catch (err) {
-              console.error(
-                `Error saving follow stats for ${twitch_info?.displayName} to DB:`,
-                err
-              );
-            }
-            console.info("Stream went offline:", event.broadcasterDisplayName);
+            // Update stream stats
+            updateTwitchStats(
+              pool,
+              JSON.stringify({
+                game_name: stream?.gameName,
+                title: stream?.title,
+                tags: stream?.tagIds,
+                followers: followTotal,
+                subscribers: 0,
+                is_live: 0,
+              }),
+              1,
+              id
+            );
           } catch (err) {
-            console.error(
+            logger.error(
               `Error listening for live event for user ${twitch_info?.displayName}:`,
               err
             );
             if (err.statusCode === 400) {
-              const conn = await pool.getConnection();
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET twitch_tokens = ? WHERE id = ?`,
-                [
-                  JSON.stringify({
-                    access_token: "0",
-                    refresh_token: "0",
-                    expires_in: "0",
-                  }),
-                  id,
-                ]
+              updateTwitchStats(
+                pool,
+                JSON.stringify({
+                  game_name: "",
+                  title: "",
+                  tags: "",
+                  followers: 0,
+                  subscribers: 0,
+                  is_live: 0,
+                }),
+                0,
+                id
               );
-              await conn.query(
-                `UPDATE ${process.env.MARIADB_TABLE} SET active = ? WHERE id = ?`,
-                [0, id]
-              );
-              await conn.release();
-              console.log(
+              logger.info(
                 `Invalid refresh token found, defaulting this user in the database`
               );
             }
@@ -297,7 +324,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         }
       );
     } catch (e) {
-      console.error(
+      logger.error(
         `Error updating subscriptions for user ${twitch_info?.displayName}:`,
         e
       );
