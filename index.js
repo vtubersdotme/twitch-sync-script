@@ -7,6 +7,7 @@ const {
 } = require("@twurple/eventsub-http");
 const { NgrokAdapter } = require("@twurple/eventsub-ngrok");
 const { createPool } = require("mariadb");
+const axios = require("axios");
 const cron = require("node-cron");
 const pino = require("pino");
 const logger = pino(
@@ -155,10 +156,43 @@ async function updateTwitchStats(pool, twitch_stats, active, id) {
   }
 }
 
+// Call vTubers.Me API to publish twitch post for provided userId
+async function publishTwitchPost(userId) {
+  const endpoint = `${process.env.VTUBERS_API_URL}`;
+
+  const payload = {
+    api_key: process.env.VTUBERS_API_KEY,
+    id: userId,
+  };
+
+  const params = new URLSearchParams(payload);
+
+  try {
+    logger.info(`Publishing twitch post for ${userId} to vTubers.Me`);
+
+    const response = await axios.post(endpoint, params);
+
+    logger.info(`API response: ${JSON.stringify(response.data)}`);
+
+    return response.data;
+  } catch (error) {
+    if (error.response) {
+      logger.error(error.response.data, "API error:");
+      return null;
+    } else if (error.request) {
+      logger.error(error.request, "No response received from the API");
+      return null;
+    } else {
+      logger.error(error, "Error during API request:");
+      return null;
+    }
+  }
+}
+
 async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
   let conn;
   let users;
-  logger.info("Running twitch main function");
+  logger.info("Running twitchMain function");
 
   // retrieve user tokens from database where active is 1
   logger.info("Querying all active twitch users from database");
@@ -222,13 +256,13 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             const followTotal = await apiClient.channels
               .getChannelFollowersPaginated(broadcaster, broadcaster)
               .getTotalCount();
-            // Update stream stats
-            updateTwitchStats(
+            // Update stream stats, needs await to make sure it finishes before publishing to vTubers.Me (is_live)
+            await updateTwitchStats(
               pool,
               JSON.stringify({
-                game_name: stream?.gameName,
-                title: stream?.title,
-                tags: stream?.tagIds,
+                game_name: stream?.gameName || "No Game",
+                title: stream?.title || "",
+                tags: stream?.tagIds || "",
                 followers: followTotal,
                 subscribers: 0,
                 is_live: 1,
@@ -236,6 +270,8 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
               1,
               id
             );
+            // Publish twitch post to vTubers.Me
+            await publishTwitchPost(id);
           } catch (err) {
             logger.error(
               err,
@@ -319,10 +355,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         }
       );
     } catch (err) {
-      logger.error(
-        err,
-        `Error updating subscriptions for user ${twitch_info?.displayName}`
-      );
+      logger.error(err, `Error updating subscriptions for user `);
     }
   }
 }

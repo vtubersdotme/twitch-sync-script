@@ -18,6 +18,10 @@ To run this project, you will need to add the following environment variables to
 
 `TWITCH_EVENT_SUB_PORT`
 
+`VTUBERS_API_KEY`
+
+`VTUBERS_API_URL`
+
 `MARIADB_HOST`
 
 `MARIADB_PORT`
