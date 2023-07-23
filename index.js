@@ -10,6 +10,7 @@ const { createPool } = require("mariadb");
 const axios = require("axios");
 const cron = require("node-cron");
 const pino = require("pino");
+
 const logger = pino(
   pino.destination({
     sync: false, // Asynchronous logging
@@ -248,6 +249,12 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             logger.info(
               `${event.broadcasterDisplayName} went live, lets do stuff`
             );
+
+            // If the user is already live, lets log it and not do anything
+            if (twitch_stats?.is_live === 1) {
+              logger.info(`User already live (${twitch_info?.id})?`);
+            }
+
             // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
             // Get stream info
@@ -265,6 +272,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                 tags: stream?.tagIds || "",
                 followers: followTotal,
                 subscribers: 0,
+                time: Math.floor(new Date().getTime() / 1000),
                 is_live: 1,
               }),
               1,
@@ -307,6 +315,12 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
             logger.info(
               `${event.broadcasterDisplayName} went offline, lets do stuff`
             );
+
+            // If the user was not already live, lets log it and not do anything
+            if (twitch_stats?.is_live === 0) {
+              logger.info(`User not already live (${twitch_info?.id})?`);
+            }
+
             // Get broadcaster from event
             const broadcaster = await event.getBroadcaster();
             // getStream does not exist for onStreamOffline, probably not needed anyway
@@ -323,6 +337,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
                 tags: "",
                 followers: followTotal,
                 subscribers: 0,
+                time: Math.floor(new Date().getTime() / 1000),
                 is_live: 0,
               }),
               1,
@@ -355,7 +370,7 @@ async function twitchMain(apiClient, authProvider, eventSubHttpListener, pool) {
         }
       );
     } catch (err) {
-      logger.error(err, `Error updating subscriptions for user `);
+      logger.error(err, `Error updating subscriptions for user`);
     }
   }
 }
